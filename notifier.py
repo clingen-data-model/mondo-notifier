@@ -1,14 +1,23 @@
-import requests
-import json
+from flask import escape
 
 
-def mondo_notifier(event, context):
-    resp = requests.get(
-        'https://api.github.com/repos/monarch-initiative/mondo/releases/latest'
-    )
-    release_tag = {'release': resp.json()['tag_name']}
-    print(json.dumps(release_tag))
+def hello_http(request):
+    """HTTP Cloud Function.
+    Args:
+        request (flask.Request): The request object.
+        <https://flask.palletsprojects.com/en/1.1.x/api/#incoming-request-data>
+    Returns:
+        The response text, or any set of values that can be turned into a
+        Response object using `make_response`
+        <https://flask.palletsprojects.com/en/1.1.x/api/#flask.make_response>.
+    """
+    request_json = request.get_json(silent=True)
+    request_args = request.args
 
-
-if __name__ == '__main__':
-    mondo_notifier(None, None)
+    if request_json and 'name' in request_json:
+        name = request_json['name']
+    elif request_args and 'name' in request_args:
+        name = request_args['name']
+    else:
+        name = 'World'
+    return 'Hello {}!'.format(escape(name))
