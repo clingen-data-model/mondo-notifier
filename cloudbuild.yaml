@@ -1,0 +1,3 @@
+steps:
+- name: 'gcr.io/cloud-builders/gcloud'
+  args: ['functions', 'deploy', 'mondo-notifier', '--trigger-http', '--runtime', 'python39', '--entry-point', 'mondo_notifier']

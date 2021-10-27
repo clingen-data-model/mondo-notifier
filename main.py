@@ -1,7 +1,7 @@
 from flask import escape
 
 
-def hello_http(request):
+def mondo_notifier(request):
     """HTTP Cloud Function.
     Args:
         request (flask.Request): The request object.
