@@ -1,4 +1,10 @@
+import os
+
 from flask import escape
+
+
+def pubsub_queue():
+    return os.environ.get('PUBSUB_QUEUE')
 
 
 def mondo_notifier(request):
@@ -20,4 +26,5 @@ def mondo_notifier(request):
         name = request_args['name']
     else:
         name = 'World'
-    return 'Hello {}!'.format(escape(name))
+    return 'Hello {}! Our pubsub destination is called {}'.format(
+        escape(name), escape(pubsub_queue()))
