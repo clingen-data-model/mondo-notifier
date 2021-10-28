@@ -1,6 +1,13 @@
 import os
 
 from flask import escape
+from google.cloud import pubsub_v1
+
+
+def publish_message(topic_name, msg):
+    publisher = pubsub_v1.PublisherClient()
+    future = publisher.publish(topic_name, msg)
+    future.result()
 
 
 def pubsub_queue():
@@ -26,5 +33,9 @@ def mondo_notifier(request):
         name = request_args['name']
     else:
         name = 'World'
+
+    topic_name = pubsub_queue()
+    publish_message(topic_name, b'{"message": "Hello, World!"}')
+
     return 'Hello {}! Our pubsub destination is called {}'.format(
-        escape(name), escape(pubsub_queue()))
+        escape(name), escape(topic_name))
