@@ -6,7 +6,7 @@ steps:
     - 'mondo-notifier'
     - '--region=us-east1'
     - '--service-account=clingen-mondo-notify@clingen-dx.iam.gserviceaccount.com'
-    - '--set-env-vars=PUBSUB_QUEUE=mondo-release-notifications'
+    - '--set-env-vars=PUBSUB_QUEUE=projects/clingen-dx/topics/mondo-release-notifications'
     - '--allow-unauthenticated'
     - '--trigger-http'
     - '--memory=128MB'
