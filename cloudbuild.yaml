@@ -9,6 +9,6 @@ steps:
     - '--set-env-vars=PUBSUB_QUEUE=projects/clingen-dx/topics/mondo-release-notifications'
     - '--allow-unauthenticated'
     - '--trigger-http'
-    - '--memory=128MB'
+    - '--memory=512MB'
     - '--runtime=python39'
     - '--entry-point=mondo_notifier'
