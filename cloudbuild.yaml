@@ -3,10 +3,10 @@ steps:
   args: 
     - 'functions'
     - 'deploy'
-    - 'mondo-notifier'
+    - 'mondo-notifier-dev'
     - '--region=us-east1'
     - '--service-account=clingen-mondo-notify@clingen-dx.iam.gserviceaccount.com'
-    - '--set-env-vars=PUBSUB_QUEUE=projects/clingen-dx/topics/mondo-release-notifications'
+    - '--set-env-vars=???'
     - '--allow-unauthenticated'
     - '--trigger-http'
     - '--memory=512MB'
