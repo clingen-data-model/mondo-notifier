@@ -7,16 +7,17 @@ import logging
 import jsonschema
 import requests
 import pandas as pd
+import numpy as np
 import io
 
 from flask import escape
-from google.cloud import pubsub_v1
 from jsonschema import validate
+from confluent_kafka import Producer, KafkaError
+
+delivered_records = 0
 
 client = google.cloud.logging.Client()
 client.setup_logging()
-
-tsv_files = ['mondo_obsoletioncandidates.tsv', 'mondo_release_diff_changed_terms.tsv', 'mondo_release_diff_new_terms.tsv']
 
 # Describe what kind of json you expect.
 releasePayloadSchema = {
@@ -26,6 +27,7 @@ releasePayloadSchema = {
     "release": {
       "type": "object",
       "properties": {
+        "tag_name": {"type": "string"},
         "name": {"type": "string"},
         "draft": {"type": "boolean"},
         "prerelease": {"type": "boolean"},
@@ -67,8 +69,8 @@ def validate_signature(request):
       return False
 
     # Create our own signature
-    secret = os.environ.get('WEBHOOK_SECRET')
-    local_signature = hmac.new(secret.encode('utf-8'), msg=request.data, digestmod=hashlib.sha256)
+    git_webhook_secret = os.environ.get('GIT_MONDO_WEBHOOK_SECRET')
+    local_signature = hmac.new(git_webhook_secret.encode('utf-8'), msg=request.data, digestmod=hashlib.sha256)
 
     # See if they match
     return hmac.compare_digest(local_signature.hexdigest(), github_signature)
@@ -81,48 +83,101 @@ def validateJson(jsonData):
       return False
     return True
 
-def publish_message(pubsub_topic, data, dest_topic, name, published_at):
-    publisher = pubsub_v1.PublisherClient()
-    future = publisher.publish(pubsub_topic, data=data, dest_topic=dest_topic, name=name, published_at=published_at )
-    future.result()
+def init_event_configs(release_json):
+    event_cfgs_str = os.environ.get('MONDO_RELEASE_EVENTS')
+    event_cfgs = json.loads(event_cfgs_str)
+    # pprint(event_cfgs)
 
-def pubsub_queue():
-    return os.environ.get('PUBSUB_MONDO_NOTIFY')
+    for event_cfg in event_cfgs:
+        for assets in release_json['assets']:
+            if (assets['name'].lower() in event_cfg["asset_name"]):
+                y = {
+                    "browser_download_url": assets['browser_download_url'],
+                    "release_name": release_json['name'],
+                    "release_tag": release_json['tag_name'],
+                    "release_date": release_json['published_at']}
+                event_cfg.update(y)
+                # pprint(event_cfg)
+
+    return event_cfgs
+
+def get_event_records(event_cfg):
+    r = requests.get(event_cfg['browser_download_url'])
+    # pprint(r.status_code)
+    r.encoding = 'utf-8'
+    # pprint(r.encoding)
+    content = r.text
+
+    # Reading the downloaded content and turning it into a pandas dataframe
+    df = pd.read_csv(io.StringIO(content), sep='\t').fillna(np.nan).replace([np.nan], [None])
+    # print('\t'+ df.head(5).to_string().replace('\n', '\n\t'))
+
+    # if this is true then there are duplicates for this set (log warning that only the first is kept)
+    if df.duplicated(subset=event_cfg['pk']).agg(max):
+        logging.warning("Duplicate records in "+event_cfg['asset_name'])
+        # print("Duplicate records in "+event_cfg['asset_name'])
+        # keeps only the first unique row for each group.
+        df = df.groupby(event_cfg['pk']).head(1)
+
+    return df.to_dict (orient='records')
+
+# Optional per-message on_delivery handler (triggered by poll() or flush())
+# when a message has been successfully delivered or
+# permanently failed delivery (after retries).
+def acked(err, msg):
+    global delivered_records
+    """Delivery report handler called on
+    successful or failed delivery of message
+    """
+    if err is not None:
+        logging.error("Failed to deliver message: {}".format(err))
+        # print("Failed to deliver message: {}".format(err))
+    else:
+        delivered_records += 1
+        # print("Produced record to topic {} partition [{}] @ offset {}"
+        #       .format(msg.topic(), msg.partition(), msg.offset()))
+
+def publish_events(producer, event_cfg, event_recs):
+    global delivered_records
+    delivered_records = 0
+
+    for rec in event_recs:
+        msg = {
+            "release_name": event_cfg['release_name'],
+            "release_date": event_cfg['release_date'],
+            "event_type": event_cfg['name'],
+            "content": rec}
+        record_value = json.dumps(msg).encode('utf8')
+        # logging.info("Producing record: {}".format(record_value))
+        producer.produce(event_cfg['topic'], value=record_value, on_delivery=acked)
+        # # p.poll() serves delivery reports (on_delivery)
+        # # from previous produce() calls.
+        producer.poll(0)
+
+    producer.flush()
+
+    logging.info("{} '{}' messages were produced to topic {}!".format(delivered_records, event_cfg['name'], event_cfg['topic']))
+    # print("{} messages were produced to topic {}!".format(delivered_records, event_cfg['topic']))
 
 def process_release(release_json):
-    name = release_json["name"]
-    published_at = release_json["published_at"]
+    dx_servers = os.environ.get('DX_BOOTSTRAP_SERVERS')
+    dx_producer_creds_str = os.environ.get('DX_MONDO_PRODUCER_CREDENTIALS')
+    dx_producer_creds = json.loads(dx_producer_creds_str)
 
-    # validate the tsv assets exist
-    assets = release_json["assets"]
-    token = os.environ.get('GITHUB_TOKEN')
+    conf = {
+        "bootstrap.servers" : dx_servers,
+        "security.protocol" : "SASL_SSL",
+        "sasl.mechanisms" : "PLAIN",
+        "sasl.username" : dx_producer_creds["user"],
+        "sasl.password" : dx_producer_creds["password"]
+    }
+    producer = Producer(conf)
 
-    # TODO log warning/info if all 3 expected files are not found
+    events_cfg = init_event_configs(release_json)
 
-    # TODO consider checking that the file column names do not change over time
-    # - if we add schemas to the kafka topics it should fail there!
-
-    #process files (validate, parse, publish)
-    pubsub_topic = pubsub_queue()
-    filtered_assets = (a for a in assets if a['name'].lower() in tsv_files)
-
-    for asset in filtered_assets:
-        # get/read file, send to parser
-        logging.info("Reading browser_download_url '{}'".format(asset['browser_download_url']))
-
-        r = requests.get(asset['browser_download_url'], headers={'Authorization': f'token {token}'}, params={})
-
-        # Reading the downloaded content and turning it into a pandas dataframe
-        df = pd.read_csv(io.StringIO(r.text), sep='\t')
-        # logging.info('\t'+ df.head(5).to_string().replace('\n', '\n\t'))
-
-        messages = df.to_dict (orient='records')
-
-        # tsv filename is the destination topic
-        dest_kafka_topic = asset['name'].split('.')[0]
-        for m in messages:
-            m_json = json.dumps(m)
-            publish_message(pubsub_topic, data=m_json.encode('utf8'), dest_topic=dest_kafka_topic.encode('utf8'), name=name.encode('utf8'), published_at=published_at.encode('utf8'))
+    for event_cfg in events_cfg:
+        event_recs = get_event_records(event_cfg)
+        publish_events(producer, event_cfg, event_recs)
 
 def mondo_notifier(request):
     """HTTP Cloud Function.
@@ -137,30 +192,30 @@ def mondo_notifier(request):
 
     if not request:
       logging.error("No request object.")
-      return 'No request object. Processing stopped.'
+      return ('No request object. Processing stopped.', 400)
 
     if not validate_signature(request):
       logging.error("Github signature did not validate.")
-      return 'Webhook signature did not validate. Processing stopped.'
+      return ('Webhook signature did not validate. Processing stopped.', 401)
 
     request_json = request.get_json(silent=True)
     if not request_json:
       logging.error("No json payload in request.")
-      return 'No json payload in request. Processing stopped.'
+      return ('No json payload in request. Processing stopped.', 400)
 
     if "action" not in request_json:
       logging.error("Json request did not contain expected 'action' key.")
-      return "Json request did not contain expected 'action' key. Processing stopped."
+      return ("Json request did not contain expected 'action' key. Processing stopped.", 400)
 
     action = request_json['action']
     if action != "released":
-      return "Not a 'action=released' request. Ignore request."
+      return ("Not a 'action=released' request. Ignore request.", 200)
 
     if not validateJson(request_json):
       logging.info(request_json)
-      return "Request json did not validate against released payload schema. Processing stopped."
+      return ("Request json did not validate against released payload schema. Processing stopped.", 400)
 
     logging.info("Action is '{}'. Starting to process files.".format(action))
     process_release(request_json["release"])
 
-    return 'Release {}! Processed successfully.'.format(escape(request_json["release"]["name"]))
+    return ('Release {}! Processed successfully.'.format(escape(request_json["release"]["name"])), 200)
