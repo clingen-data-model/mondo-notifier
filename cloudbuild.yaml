@@ -1,14 +1,16 @@
 steps:
 - name: 'gcr.io/cloud-builders/gcloud'
-  args: 
+  args:
+    - 'beta'
     - 'functions'
     - 'deploy'
     - 'mondo-notifier'
     - '--region=us-east1'
     - '--service-account=clingen-mondo-notify@clingen-dx.iam.gserviceaccount.com'
-    - '--set-env-vars=PUBSUB_QUEUE=projects/clingen-dx/topics/mondo-release-notifications'
+    - '--env-vars-file=mondo-notifier-env.yaml'
+    - '--set-secrets=DX_MONDO_PRODUCER_CREDENTIALS=kafka-credentials:latest,GIT_MONDO_WEBHOOK_SECRET=mondo-git-webhook-secret:latest'
     - '--allow-unauthenticated'
     - '--trigger-http'
-    - '--memory=128MB'
+    - '--memory=512MB'
     - '--runtime=python39'
     - '--entry-point=mondo_notifier'
